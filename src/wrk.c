@@ -31,6 +31,8 @@ static struct config {
     bool     print_realtime_latency;
     char    *script;
     SSL_CTX *ctx; //https://www.openssl.org/docs/man3.0/man3/SSL_CTX_new.html
+    /* added by TR */
+    char    *rate_file;
 } cfg;
 
 static struct {
@@ -62,21 +64,80 @@ static void handler(int sig) {
     stop = 1;
 }
 
+int min(int a, int b){
+    return (a<b) ? a : b;
+}
+
 
 /* added by TR */
-void parse_rate(int **rate)
+void parse_rate(int *rate)
 {
     uint64_t connections = cfg.connections / cfg.threads;
     // uint64_t throughput = cfg.rate / cfg.threads;
-    
-    for(int i=0; i<cfg.duration; i++){
-        if(i<cfg.duration/2){
-            (*rate)[i]= 1000000 / (1000 / cfg.connections);
-        }
-        else{
-            (*rate)[i]= 1000000 / (2000 / cfg.connections);
-        }
+
+    FILE * fp;
+
+    if(cfg.rate_file == NULL){
+        printf("ERROR: no rate file provided\n");
+        exit(-1);
     }
+    
+    printf("loading rate from file %s\n", cfg.rate_file);
+    
+    if ((fp = fopen(cfg.rate_file, "r")) == NULL){
+        perror("rate_file");
+        exit(-1);
+    }
+
+    float next_timestamp;
+    int next_rate, current_rate=1;
+    int next_index=0;
+
+    int i=0;
+    while( i < cfg.duration ){
+        int r=fscanf(fp,"%f,%d\n",&next_timestamp, &next_rate);
+        if(r == EOF){
+            break;
+        }
+        printf("%f: %d\n", next_timestamp, next_rate);
+
+        next_index=(int) next_timestamp;
+
+        printf("next index: %d, current_rate: %d\n", next_index, current_rate);
+        
+        assert(next_index >= i);
+        
+        int j=i;
+        for(; j<min(next_index, cfg.duration); j++){
+            float rate_per_connection= (float) current_rate / (float) cfg.connections;
+            rate[j]= (int) ((float) 1000000 / rate_per_connection);
+        }
+
+        i=j;
+        current_rate=next_rate;
+
+
+        /* if(i<cfg.duration/2){ */
+        /*     (*rate)[i]= 1000000 / (1000 / cfg.connections); */
+        /* } */
+        /* else{ */
+        /*     (*rate)[i]= 1000000 / (2000 / cfg.connections); */
+        /* } */
+    }
+
+    rate[i++]=(int) ((float) 1000000 / ((float) current_rate / (float) cfg.connections));
+    
+    int nb_filed_values=i;
+    for(; i < cfg.duration; i++){
+        rate[i] = rate[i % nb_filed_values];
+    }
+
+
+    /* display for debugging */
+    for(i=0; i<cfg.duration; i++){
+        printf("timestamp: %d \t delay:%d\n", i, rate[i]);
+    }
+
 }
 
 
@@ -104,6 +165,7 @@ static void usage() {
            "    -R, --rate        <T>  work rate (throughput)                \n"
            "                           in requests/sec (total)               \n"
            "                           [Required Parameter]                  \n"
+           "    -f, --file        <S>  Load rate file                  \n"           
            "                                                                 \n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
@@ -150,7 +212,7 @@ int main(int argc, char **argv) {
 
     /* added by TR */
     target_rate = (int*) malloc(cfg.duration * sizeof(int));
-    parse_rate(&target_rate);
+    parse_rate(target_rate);
     
     char **purls = urls;
 
@@ -671,8 +733,8 @@ uint64_t gen_exp(connection *c) {
 /* added by TR */
 uint64_t gen_next2(connection *c, uint64_t now) {
     int index = (now-start_time)/1000000;
-    printf("index for next rate: %d\n", index);
-    return target_rate[index];
+    /* printf("index for next rate: %d\n", index); */
+    return target_rate[index%cfg.duration];
 }
 
 
@@ -933,7 +995,7 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_sent_requests = false;
     cfg->dist = 0;
 
-    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:R:LPrSpBv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:R:f:LPrSpBv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -989,6 +1051,10 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
                 printf("wrk %s [%s] ", VERSION, aeGetApiName());
                 printf("Copyright (C) 2012 Will Glozer\n");
                 break;
+        case 'f':
+            /* added by TR */
+            cfg->rate_file = optarg;
+            break;
             case 'h': 
             case '?': 
             case ':': 
