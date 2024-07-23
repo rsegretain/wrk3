@@ -29,7 +29,6 @@
 #define MAXO 65535
 #define MAXTHREADS 40
 
-
 typedef struct {
     pthread_t thread;
     aeEventLoop *loop;

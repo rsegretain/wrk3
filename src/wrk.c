@@ -51,11 +51,34 @@ static struct http_parser_settings parser_settings = {
     .on_message_complete = response_complete
 };
 
+
+/* added by TR */
+static int *target_rate;
+static uint64_t start_time;
+
 static volatile sig_atomic_t stop = 0;
 
 static void handler(int sig) {
     stop = 1;
 }
+
+
+/* added by TR */
+void parse_rate(int **rate)
+{
+    uint64_t connections = cfg.connections / cfg.threads;
+    // uint64_t throughput = cfg.rate / cfg.threads;
+    
+    for(int i=0; i<cfg.duration; i++){
+        if(i<cfg.duration/2){
+            (*rate)[i]= 1000000 / (1000 / cfg.connections);
+        }
+        else{
+            (*rate)[i]= 1000000 / (2000 / cfg.connections);
+        }
+    }
+}
+
 
 static void usage() {
     printf("Usage: wrk <options> <url>                                       \n"
@@ -125,6 +148,10 @@ int main(int argc, char **argv) {
     uint64_t start_urls[cfg.num_urls];
     /*statitical variables*/
 
+    /* added by TR */
+    target_rate = (int*) malloc(cfg.duration * sizeof(int));
+    parse_rate(&target_rate);
+    
     char **purls = urls;
 
     for(int id_url=0; id_url< cfg.num_urls; id_url++ ){
@@ -167,6 +194,8 @@ int main(int argc, char **argv) {
         }
 
         uint64_t stop_at = time_us() + (cfg.duration * 1000000); // check timeout
+        /* added by TR */
+        start_time = time_us();
 
         for (uint64_t id_thread = 0; id_thread < cfg.threads; id_thread++) {
             uint64_t i = id_url * cfg.threads + id_thread;
@@ -419,6 +448,7 @@ void *thread_main(void *arg) {
         c->request    = request;
         c->length     = length;
         c->interval   = 1000000*thread->connections/thread->throughput;
+        /*printf("connect: %lu computed interval: %lu, ttroughput: %lf\n", thread->connections, c->interval, thread->throughput);*/
         c->throughput = throughput;
         c->complete   = 0;
         c->estimate   = 0;
@@ -638,6 +668,14 @@ uint64_t gen_exp(connection *c) {
     return (uint64_t)(exp_value);
 }
 
+/* added by TR */
+uint64_t gen_next2(connection *c, uint64_t now) {
+    int index = (now-start_time)/1000000;
+    printf("index for next rate: %d\n", index);
+    return target_rate[index];
+}
+
+
 uint64_t gen_next(connection *c) {
     if (cfg.dist == 0) { // FIXED
         return c->interval;
@@ -658,7 +696,9 @@ static uint64_t usec_to_next_send(connection *c) {
     //c->thread_next = c->thread_start + c->sent/c->throughput;
     if (c->estimate <= c->sent) {
         ++c->estimate;
-        c->thread_next += gen_next(c);
+        /* modified by TR */
+        /* c->thread_next += gen_next(c); */
+        c->thread_next += gen_next2(c, now);
     }
     if ((c->thread_next) > now)
         return c->thread_next - now;
