@@ -160,13 +160,38 @@ void script_request(lua_State *L, char **buf, size_t *len) {
 void script_response(lua_State *L, int status, buffer *headers, buffer *body) {
     lua_getglobal(L, "response");
     lua_pushinteger(L, status);
-    lua_newtable(L);
+    /* START - Modified by Rémi Segretain : add support for multiple cookies in the response */
+    lua_newtable(L); // parent headers table
+
+    int cookie_idx = 1;
 
     for (char *c = headers->buffer; c < headers->cursor; ) {
-        c = buffer_pushlstring(L, c);
-        c = buffer_pushlstring(L, c);
-        lua_rawset(L, -3);
+        if (strcmp(c, "Set-Cookie") == 0) {
+            if (cookie_idx == 1) { // create the cookies table
+                // create table
+                buffer_pushlstring(L, c); // -2, the name of the new table "Set-Cookie"
+                lua_newtable(L); // -1, the new table
+                lua_settable(L, -3); // tell the parent table in -3 to save the new table in -1 under the name "Set-Cookie" in -2
+            }
+            
+            // get the cookie table
+            c = buffer_pushlstring(L, c);
+            lua_gettable(L, -2);
+
+            // save the cookie
+            lua_pushnumber(L, cookie_idx++); // -2, push the cookie index
+            c = buffer_pushlstring(L, c); // -1, push the cookie value
+            lua_settable(L, -3); // save the cookie
+
+            lua_pop(L, 1); // go back to the headers table
+        }
+        else {
+            c = buffer_pushlstring(L, c);
+            c = buffer_pushlstring(L, c);
+            lua_rawset(L, -3);
+        }
     }
+    /* END - Modified by Rémi Segretain */
 
     lua_pushlstring(L, body->buffer, body->cursor - body->buffer);
     lua_call(L, 3, 0);
