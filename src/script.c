@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "script.h"
 #include "http_parser.h"
 #include "stats.h"
@@ -166,12 +167,17 @@ void script_response(lua_State *L, int status, buffer *headers, buffer *body) {
     int cookie_idx = 1;
 
     for (char *c = headers->buffer; c < headers->cursor; ) {
-        if (strcmp(c, "Set-Cookie") == 0) {
+        // save lower case header name
+        for(int i = 0; c[i]; i++){
+            c[i] = tolower(c[i]);
+        }
+
+        if (strcmp(c, "set-cookie") == 0) {
             if (cookie_idx == 1) { // create the cookies table
                 // create table
-                buffer_pushlstring(L, c); // -2, the name of the new table "Set-Cookie"
+                buffer_pushlstring(L, c); // -2, the name of the new table "set-cookie"
                 lua_newtable(L); // -1, the new table
-                lua_settable(L, -3); // tell the parent table in -3 to save the new table in -1 under the name "Set-Cookie" in -2
+                lua_settable(L, -3); // tell the parent table in -3 to save the new table in -1 under the name "set-cookie" in -2
             }
             
             // get the cookie table
