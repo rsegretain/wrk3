@@ -794,18 +794,6 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
 static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     thread *thread = c->thread;
-    if (!c->written) {
-        uint64_t time_usec_to_wait = usec_to_next_send(c);
-        if (time_usec_to_wait) {
-            int msec_to_wait = round((time_usec_to_wait / 1000.0L) + 0.5);
-
-            // Not yet time to send. Delay:
-            aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-            aeCreateTimeEvent(
-                    thread->loop, msec_to_wait, delay_request, c, NULL);
-            return;
-        }
-    }
 
     if (!c->written && cfg.dynamic) {
         script_request(thread->L, &c->request, &c->length);
@@ -831,6 +819,20 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         c->thread->sent ++;
 
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
+
+        
+        uint64_t time_usec_to_wait = usec_to_next_send(c);
+        if (time_usec_to_wait) {
+            int msec_to_wait = round((time_usec_to_wait / 1000.0L) + 0.5);
+
+            // Not yet time to send. Delay:
+            aeDeleteFileEvent(loop, fd, AE_WRITABLE);
+            aeCreateTimeEvent(
+                    thread->loop, msec_to_wait, delay_request, c, NULL);
+            return;
+        }
+        
+
         aeCreateFileEvent(thread->loop, c->fd, AE_WRITABLE, socket_writeable, c);
     }
     return;
