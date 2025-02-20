@@ -72,9 +72,6 @@ int min(int a, int b){
 /* added by TR */
 void parse_rate(int *rate)
 {
-    uint64_t connections = cfg.connections / cfg.threads;
-    // uint64_t throughput = cfg.rate / cfg.threads;
-
     FILE * fp;
 
     if(cfg.rate_file == NULL){
@@ -94,16 +91,22 @@ void parse_rate(int *rate)
     int next_index=0;
 
     int i=0;
+
+    float current_timestamp;
+    fscanf(fp,"%f,%d\n",&current_timestamp, &current_rate);
+    cfg.rate = current_rate;
+    i = (int) current_timestamp;
+
     while( i < cfg.duration ){
         int r=fscanf(fp,"%f,%d\n",&next_timestamp, &next_rate);
         if(r == EOF){
             break;
         }
-        printf("%f: %d\n", next_timestamp, next_rate);
+        // printf("%f: %d\n", next_timestamp, next_rate);
 
         next_index=(int) next_timestamp;
 
-        printf("next index: %d, current_rate: %d\n", next_index, current_rate);
+        // printf("next index: %d, current_rate: %d\n", next_index, current_rate);
         
         assert(next_index >= i);
         
@@ -115,14 +118,6 @@ void parse_rate(int *rate)
 
         i=j;
         current_rate=next_rate;
-
-
-        /* if(i<cfg.duration/2){ */
-        /*     (*rate)[i]= 1000000 / (1000 / cfg.connections); */
-        /* } */
-        /* else{ */
-        /*     (*rate)[i]= 1000000 / (2000 / cfg.connections); */
-        /* } */
     }
 
     rate[i++]=(int) ((float) 1000000 / ((float) current_rate / (float) cfg.connections));
@@ -162,7 +157,6 @@ static void usage() {
            "                           (as opposed to each op)               \n"
            "    -r, --requests         Show the number of sent requests      \n"
            "    -v, --version          Print version details                 \n"
-           "    -R, --rate        <T>  work rate (throughput)                \n"
            "                           in requests/sec (total)               \n"
            "                           [Required Parameter]                  \n"
            "    -f, --file        <S>  Load rate file                  \n"           
@@ -186,7 +180,7 @@ int main(int argc, char **argv) {
 
     thread *threads = zcalloc(cfg.num_urls * cfg.threads * sizeof(thread));
     uint64_t connections = cfg.connections / cfg.threads;
-    uint64_t throughput = cfg.rate / cfg.threads;
+    
     char *time = format_time_s(cfg.duration);
 
     lua_State **L = zmalloc(cfg.num_urls * sizeof(lua_State *));
@@ -213,6 +207,8 @@ int main(int argc, char **argv) {
     /* added by TR */
     target_rate = (int*) malloc(cfg.duration * sizeof(int));
     parse_rate(target_rate);
+
+    uint64_t throughput = cfg.rate / cfg.threads;
     
     char **purls = urls;
 
@@ -280,7 +276,7 @@ int main(int argc, char **argv) {
                 cfg.pipeline = script_verify_request(t->L);
                 cfg.dynamic = !script_is_static(t->L);
                 if (script_want_response(t->L)) {
-                    printf("script_want_response\n");
+                    // printf("script_want_response\n");
                     parser_settings.on_header_field = header_field;
                     parser_settings.on_header_value = header_value;
                     parser_settings.on_body         = response_body;
@@ -308,8 +304,6 @@ int main(int argc, char **argv) {
 
     sigfillset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
-
-    uint64_t start  = time_us();
 
     purls = urls;
     for(uint64_t id_url=0; id_url< cfg.num_urls; id_url++ ){        
@@ -504,6 +498,10 @@ void *thread_main(void *arg) {
 
     connection *c = thread->cs;
     // connection *pc = thread->cs;
+
+    // RS : adapted from https://github.com/giltene/wrk2/pull/100 to uniformize the request sent per second
+    uint64_t step = 1000 / thread->throughput;
+
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
         c->ssl        = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
@@ -516,12 +514,11 @@ void *thread_main(void *arg) {
         c->estimate   = 0;
         c->sent       = 0;
         //Stagger connects 1 msec apart within thread
-        uint64_t id = thread->tid * thread->connections + i;
-        aeCreateTimeEvent(loop, i, delayed_initial_connect, c, NULL);
+        aeCreateTimeEvent(loop, i * step, delayed_initial_connect, c, NULL);
     }
 
-    uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections);
-    uint64_t timeout_delay = TIMEOUT_INTERVAL_MS + (thread->connections);
+    uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
+    uint64_t timeout_delay = TIMEOUT_INTERVAL_MS + (thread->connections * step);
 
     aeCreateTimeEvent(loop, calibrate_delay, calibrate, thread, NULL);
     aeCreateTimeEvent(loop, timeout_delay, check_timeouts, thread, NULL);
@@ -602,9 +599,6 @@ static int calibrate(aeEventLoop *loop, long long id, void *data) {
     thread->start    = time_us();
     thread->interval = interval;
     thread->requests = 0;
-
-    uint64_t id_url = thread->tid / cfg.threads;
-    uint64_t id_thread = thread->tid % cfg.threads;
     
     printf("  Thread calibration: mean lat.: %.3fms, rate sampling interval: %dms\n",
             (thread->mean)/1000.0,
@@ -678,58 +672,6 @@ static int response_body(http_parser *parser, const char *at, size_t len) {
     return 0;
 }
 
-uint64_t gen_zipf(connection *conn)
-{
-    static int first = 1;      // Static first time flag
-    static double c = 0;          // Normalization constant
-    static double scalar = 0;
-    double z;                     // Uniform random number (0 < z < 1)
-    double sum_prob;              // Sum of probabilities
-    double zipf_value;            // Computed exponential value to be returned
-    int n = 100;
-    double alpha = 3;
-
-    // Compute normalization constant on first call only
-    if (first == 1) {
-        for (int i=1; i<=n; i++)
-            c = c + (1.0 / pow((double) i, alpha));
-        c = 1.0 / c;
-        for (int i=1; i<=n; i++) {
-            double prob = c / pow((double) i, alpha);
-            scalar = scalar + i*prob;
-        }
-
-        scalar = conn->interval / scalar;
-        first = 0;
-    }
-
-  // Pull a uniform random number (0 < z < 1)
-    do {
-        z = (double)rand()/RAND_MAX;
-    } while ((z == 0) || (z == 1));
-
-    // Map z to the value
-    sum_prob = 0;
-    for (int i=1; i<=n; i++) {
-        sum_prob = sum_prob + c / pow((double) i, alpha);
-        if (sum_prob >= z) {
-            zipf_value = i;
-            break;
-        }
-    }
-    return (uint64_t)(zipf_value*scalar);
-}
-
-uint64_t gen_exp(connection *c) {
-    double z;
-    double exp_value;
-    do {
-        z = (double)rand()/RAND_MAX;
-    } while ((z == 0) || (z == 1));
-    exp_value = (-log(z)*(c->interval));
-    return (uint64_t)(exp_value);
-}
-
 /* added by TR */
 uint64_t gen_next2(connection *c, uint64_t now) {
     int index = (now-start_time)/1000000;
@@ -737,37 +679,21 @@ uint64_t gen_next2(connection *c, uint64_t now) {
     return target_rate[index%cfg.duration];
 }
 
-
-uint64_t gen_next(connection *c) {
-    if (cfg.dist == 0) { // FIXED
-        return c->interval;
-    }
-    else if (cfg.dist == 1) { // EXP
-        return gen_exp(c);
-    }
-    else if (cfg.dist == 2) {
-    }
-    else if (cfg.dist == 3) {
-       return gen_zipf(c);
-    }
-    return 0;
-}
-
 static uint64_t usec_to_next_send(connection *c) {
     uint64_t now = time_us();
-    //c->thread_next = c->thread_start + c->sent/c->throughput;
     if (c->estimate <= c->sent) {
         ++c->estimate;
         /* modified by TR */
-        /* c->thread_next += gen_next(c); */
         c->thread_next += gen_next2(c, now);
     }
-    if ((c->thread_next) > now)
+
+    if ((c->thread_next) > now) {
+
         return c->thread_next - now;
-    else
+    }
+    else {
         return 0;
-    
-        
+    }
 }
 
 static int delay_request(aeEventLoop *loop, long long id, void *data) {
@@ -968,7 +894,6 @@ static struct option longopts[] = {
     { "timeout",        required_argument, NULL, 'T' },
     { "help",           no_argument,       NULL, 'h' },
     { "version",        no_argument,       NULL, 'v' },
-    { "rate",           required_argument, NULL, 'R' },
     { "dist",           required_argument, NULL, 'D' },
     { NULL,             0,                 NULL,  0  }
 };
@@ -995,7 +920,7 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_sent_requests = false;
     cfg->dist = 0;
 
-    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:R:f:LPrSpBv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:LPrSpBv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -1044,17 +969,14 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
                 if (scan_time(optarg, &cfg->timeout)) return -1;
                 cfg->timeout *= 1000;
                 break;
-            case 'R':
-                if (scan_metric(optarg, &cfg->rate)) return -1;
-                break;
             case 'v':
                 printf("wrk %s [%s] ", VERSION, aeGetApiName());
                 printf("Copyright (C) 2012 Will Glozer\n");
                 break;
-        case 'f':
-            /* added by TR */
-            cfg->rate_file = optarg;
-            break;
+            case 'f':
+                /* added by TR */
+                cfg->rate_file = optarg;
+                break;
             case 'h': 
             case '?': 
             case ':': 
@@ -1070,17 +992,13 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
         return -1;
     }
 
-    if (cfg->rate == 0) {
-        fprintf(stderr,
-                "Throughput MUST be specified with the --rate or -R option\n");
-        return -1;
-    }
-
     for(int i = optind; i<argc; i++)
     {   
         if (!script_parse_url(argv[i], *mul_part)) {
-            fprintf(stderr, "invalid URL: %s\n", argv[i]);
-            return -1;
+            // RS : further args must be args for the init lua function
+            break;
+            // fprintf(stderr, "invalid URL: %s\n", argv[i]);
+            // return -1;
         }
         **url = argv[i];
         (*mul_part)++;
@@ -1122,7 +1040,6 @@ static void print_units(long double n, char *(*fmt)(long double), int width) {
 }
 
 static void print_stats(char *name, stats *stats, char *(*fmt)(long double)) {
-    uint64_t max = stats->max;
     long double mean  = stats_summarize(stats);
     long double stdev = stats_stdev(stats, mean);
 
@@ -1145,16 +1062,4 @@ static void print_hdr_latency(struct hdr_histogram* histogram, const char* descr
     }
     printf("\n%s\n", "  Detailed Percentile spectrum:");
     hdr_percentiles_print(histogram, stdout, 5, 1000.0, CLASSIC);
-}
-
-static void print_stats_latency(stats *stats) {
-    long double percentiles[] = { 50.0, 75.0, 90.0, 99.0, 99.9, 99.99, 99.999, 100.0 };
-    printf("  Latency Distribution\n");
-    for (size_t i = 0; i < sizeof(percentiles) / sizeof(long double); i++) {
-        long double p = percentiles[i];
-        uint64_t n = stats_percentile(stats, p);
-        printf("%7.3Lf%%", p);
-        print_units(n, format_time_us, 10);
-        printf("\n");
-    }
 }
