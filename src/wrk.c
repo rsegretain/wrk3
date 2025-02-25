@@ -20,7 +20,7 @@ static struct config {
     uint64_t duration;
     uint64_t timeout;
     uint64_t pipeline;
-    uint64_t rate;
+    double rate;
     uint64_t delay_ms;
     bool     print_separate_histograms;
     bool     print_sent_requests;
@@ -95,7 +95,7 @@ void parse_rate(int *rate)
     float current_timestamp;
     fscanf(fp,"%f,%d\n",&current_timestamp, &current_rate);
     cfg.rate = current_rate;
-    i = (int) current_timestamp;
+    i = (int) current_timestamp; // should still be zero
 
     while( i < cfg.duration ){
         int r=fscanf(fp,"%f,%d\n",&next_timestamp, &next_rate);
@@ -126,7 +126,6 @@ void parse_rate(int *rate)
     for(; i < cfg.duration; i++){
         rate[i] = rate[i % nb_filed_values];
     }
-
 
     /* display for debugging */
     for(i=0; i<cfg.duration; i++){
@@ -208,7 +207,7 @@ int main(int argc, char **argv) {
     target_rate = (int*) malloc(cfg.duration * sizeof(int));
     parse_rate(target_rate);
 
-    uint64_t throughput = cfg.rate / cfg.threads;
+    double throughput = cfg.rate / cfg.threads;
     
     char **purls = urls;
 
@@ -500,7 +499,7 @@ void *thread_main(void *arg) {
     // connection *pc = thread->cs;
 
     // RS : adapted from https://github.com/giltene/wrk2/pull/100 to uniformize the request sent per second
-    uint64_t step = 1000 / thread->throughput;
+    uint64_t step = (target_rate[0] / 1000) / thread->connections;
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
@@ -508,13 +507,13 @@ void *thread_main(void *arg) {
         c->request    = request;
         c->length     = length;
         c->interval   = 1000000*thread->connections/thread->throughput;
-        /*printf("connect: %lu computed interval: %lu, ttroughput: %lf\n", thread->connections, c->interval, thread->throughput);*/
         c->throughput = throughput;
         c->complete   = 0;
         c->estimate   = 0;
         c->sent       = 0;
         //Stagger connects 1 msec apart within thread
-        aeCreateTimeEvent(loop, i * step, delayed_initial_connect, c, NULL);
+        aeCreateTimeEvent(loop, (i * step), delayed_initial_connect, c, NULL);
+        // printf("%ld\n", i*step);
     }
 
     uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
@@ -676,7 +675,9 @@ static int response_body(http_parser *parser, const char *at, size_t len) {
 uint64_t gen_next2(connection *c, uint64_t now) {
     int index = (now-start_time)/1000000;
     /* printf("index for next rate: %d\n", index); */
-    return target_rate[index%cfg.duration];
+    uint64_t delay_amount = target_rate[index%cfg.duration] * 0.2; // % of the current delay
+    uint64_t rnd_delay = (rand() % (delay_amount * 2)) - delay_amount;
+    return target_rate[index%cfg.duration] + rnd_delay;
 }
 
 static uint64_t usec_to_next_send(connection *c) {
