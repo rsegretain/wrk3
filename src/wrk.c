@@ -499,7 +499,20 @@ void *thread_main(void *arg) {
     // connection *pc = thread->cs;
 
     // RS : adapted from https://github.com/giltene/wrk2/pull/100 to uniformize the request sent per second
-    uint64_t step = (target_rate[0] / 1000) / thread->connections;
+    uint64_t rate_index = 0;
+    uint64_t step =  (uint64_t) (((float) (target_rate[rate_index] / (float) 1000)) / (float) cfg.connections);
+    uint64_t delay = 0;
+
+    // delay each thread from one another
+    for (uint64_t tid = 0; tid < thread->tid; tid++) {
+        for (uint64_t conn_id = 0; conn_id < thread->connections; conn_id++) {
+            delay += step;
+            if ((delay / 1000) > rate_index) {
+                rate_index++;
+                step =  (uint64_t) (((float) (target_rate[rate_index] / (float) 1000)) / (float) cfg.connections);
+            }
+        }
+    }
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
@@ -512,8 +525,13 @@ void *thread_main(void *arg) {
         c->estimate   = 0;
         c->sent       = 0;
         //Stagger connects 1 msec apart within thread
-        aeCreateTimeEvent(loop, (i * step), delayed_initial_connect, c, NULL);
-        // printf("%ld\n", i*step);
+        aeCreateTimeEvent(loop, delay, delayed_initial_connect, c, NULL);
+        delay += step;
+        if ((delay / 1000) > rate_index) {
+            rate_index++;
+            step =  (uint64_t) (((float) (target_rate[rate_index] / (float) 1000)) / (float) cfg.connections);
+        }
+        // printf("%ld : %ld\n", thread->tid, delay);
     }
 
     uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
@@ -674,10 +692,21 @@ static int response_body(http_parser *parser, const char *at, size_t len) {
 /* added by TR */
 uint64_t gen_next2(connection *c, uint64_t now) {
     int index = (now-start_time)/1000000;
+    uint64_t delay = target_rate[index%cfg.duration];
     /* printf("index for next rate: %d\n", index); */
-    uint64_t delay_amount = target_rate[index%cfg.duration] * 0.2; // % of the current delay
-    uint64_t rnd_delay = (rand() % (delay_amount * 2)) - delay_amount;
-    return target_rate[index%cfg.duration] + rnd_delay;
+    uint64_t delay_amount = delay * 0.2; // % of the current delay
+    int64_t rnd_delay = (rand() % (delay_amount * 2)) - delay_amount;
+
+    // compute the average delay over the period the connection should sleep (delay)
+    // so that it doesn't over/under sleep too much
+    uint64_t i = 0;
+    uint64_t avg_delay = 0;
+    for (; i <= (delay / 1000000) ;i++) {
+        avg_delay += target_rate[(index + i)%cfg.duration];
+    }
+    avg_delay = avg_delay / i;
+
+    return avg_delay + rnd_delay;
 }
 
 static uint64_t usec_to_next_send(connection *c) {
