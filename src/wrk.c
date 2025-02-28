@@ -58,6 +58,8 @@ static struct http_parser_settings parser_settings = {
 static int *target_rate;
 static uint64_t start_time;
 
+static uint64_t* total_requests_sent_target; /* added by RS */
+
 static volatile sig_atomic_t stop = 0;
 
 static void handler(int sig) {
@@ -67,7 +69,6 @@ static void handler(int sig) {
 int min(int a, int b){
     return (a<b) ? a : b;
 }
-
 
 /* added by TR */
 void parse_rate(int *rate)
@@ -95,6 +96,7 @@ void parse_rate(int *rate)
     float current_timestamp;
     fscanf(fp,"%f,%d\n",&current_timestamp, &current_rate);
     cfg.rate = current_rate;
+    total_requests_sent_target[0] = current_rate;
     i = (int) current_timestamp; // should still be zero
 
     while( i < cfg.duration ){
@@ -114,6 +116,7 @@ void parse_rate(int *rate)
         for(; j<min(next_index, cfg.duration); j++){
             float rate_per_connection= (float) current_rate / (float) cfg.connections;
             rate[j]= (int) ((float) 1000000 / rate_per_connection);
+            total_requests_sent_target[j+1] = total_requests_sent_target[j] + next_rate;
         }
 
         i=j;
@@ -125,12 +128,16 @@ void parse_rate(int *rate)
     int nb_filed_values=i;
     for(; i < cfg.duration; i++){
         rate[i] = rate[i % nb_filed_values];
+        total_requests_sent_target[i] = total_requests_sent_target[i-1] + (total_requests_sent_target[(i % nb_filed_values)+1] - total_requests_sent_target[(i % nb_filed_values)-0]);
     }
 
     /* display for debugging */
-    for(i=0; i<cfg.duration; i++){
-        printf("timestamp: %d \t delay:%d\n", i, rate[i]);
-    }
+    // for(i=0; i<cfg.duration; i++){
+    //     printf("timestamp: %d \t delay:%d\n", i, rate[i]);
+    // }
+    // for(i=0; i<cfg.duration; i++){
+    //     printf("timestamp: %d \t total_requests_sent_target:%ld\n", i, total_requests_sent_target[i]);
+    // }
 
 }
 
@@ -203,9 +210,12 @@ int main(int argc, char **argv) {
     uint64_t start_urls[cfg.num_urls];
     /*statitical variables*/
 
+    /* added by RS */
+    total_requests_sent_target = (uint64_t*) malloc(cfg.duration * sizeof(uint64_t));
     /* added by TR */
     target_rate = (int*) malloc(cfg.duration * sizeof(int));
     parse_rate(target_rate);
+
 
     double throughput = cfg.rate / cfg.threads;
     
@@ -258,7 +268,6 @@ int main(int argc, char **argv) {
             uint64_t i = id_url * cfg.threads + id_thread;
             thread *t = &threads[i];
             t->tid           =  i;
-            // aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR)
             t->loop          = aeCreateEventLoop(10 + cfg.connections * cfg.num_urls * 3);
             t->connections   = connections;
             t->throughput    = throughput;
@@ -485,34 +494,18 @@ void *thread_main(void *arg) {
 
     if ((cfg.print_realtime_latency) && ((thread->tid%cfg.threads) == 0)) {
         char filename[50];
-        // snprintf(filename, 50, "/filer-01/datasets/nginx/url%" PRIu64 "thread%" PRIu64 ".txt", (thread->tid/cfg.threads), (thread->tid%cfg.threads));
         snprintf(filename, 50, "%s/url%" PRIu64 "thread%" PRIu64 ".txt", getcwd(NULL,0), (thread->tid/cfg.threads), (thread->tid%cfg.threads));
         printf("filename %s\n",filename);
         thread->ff = fopen(filename, "w");
     }
 
-    // thread->throughput: request/thread/sec
-    // c->throughput = throughput: request/connection/us
     double throughput = (thread->throughput / 1000000.0) / thread->connections;
 
     connection *c = thread->cs;
-    // connection *pc = thread->cs;
 
-    // RS : adapted from https://github.com/giltene/wrk2/pull/100 to uniformize the request sent per second
-    uint64_t rate_index = 0;
-    uint64_t step =  (uint64_t) (((float) (target_rate[rate_index] / (float) 1000)) / (float) cfg.connections);
-    uint64_t delay = 0;
-
-    // delay each thread from one another
-    for (uint64_t tid = 0; tid < thread->tid; tid++) {
-        for (uint64_t conn_id = 0; conn_id < thread->connections; conn_id++) {
-            delay += step;
-            if ((delay / 1000) > rate_index) {
-                rate_index++;
-                step =  (uint64_t) (((float) (target_rate[rate_index] / (float) 1000)) / (float) cfg.connections);
-            }
-        }
-    }
+    
+    /* RS : spread the connections start over the first second */
+    uint64_t step = 1000 / thread->connections;
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
@@ -524,14 +517,7 @@ void *thread_main(void *arg) {
         c->complete   = 0;
         c->estimate   = 0;
         c->sent       = 0;
-        //Stagger connects 1 msec apart within thread
-        aeCreateTimeEvent(loop, delay, delayed_initial_connect, c, NULL);
-        delay += step;
-        if ((delay / 1000) > rate_index) {
-            rate_index++;
-            step =  (uint64_t) (((float) (target_rate[rate_index] / (float) 1000)) / (float) cfg.connections);
-        }
-        // printf("%ld : %ld\n", thread->tid, delay);
+        aeCreateTimeEvent(loop, i*step, delayed_initial_connect, c, NULL);
     }
 
     uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
@@ -690,48 +676,20 @@ static int response_body(http_parser *parser, const char *at, size_t len) {
 }
 
 /* added by TR */
-uint64_t gen_next2(connection *c, uint64_t now) {
+static uint64_t usec_to_next_send(connection *c) {
+    uint64_t now = time_us();
     int index = (now-start_time)/1000000;
     uint64_t delay = target_rate[index%cfg.duration];
     /* printf("index for next rate: %d\n", index); */
-    uint64_t delay_amount = delay * 0.2; // % of the current delay
-    int64_t rnd_delay = (rand() % (delay_amount * 2)) - delay_amount;
 
-    // compute the average delay over the period the connection should sleep (delay)
-    // so that it doesn't over/under sleep too much
-    uint64_t i = 0;
-    uint64_t avg_delay = 0;
-    for (; i <= (delay / 1000000) ;i++) {
-        avg_delay += target_rate[(index + i)%cfg.duration];
-    }
-    avg_delay = avg_delay / i;
-
-    return avg_delay + rnd_delay;
+    // max sleep duration of 2s
+    return min(delay, 2 * 1000000);
 }
 
-static uint64_t usec_to_next_send(connection *c) {
-    uint64_t now = time_us();
-    if (c->estimate <= c->sent) {
-        ++c->estimate;
-        /* modified by TR */
-        c->thread_next += gen_next2(c, now);
-    }
 
-    if ((c->thread_next) > now) {
 
-        return c->thread_next - now;
-    }
-    else {
-        return 0;
-    }
-}
-
-static int delay_request(aeEventLoop *loop, long long id, void *data) {
+static int delay_request_direct(aeEventLoop *loop, long long id, void *data) {
     connection* c = data;
-    uint64_t time_usec_to_wait = usec_to_next_send(c);
-    if (time_usec_to_wait) {
-        return round((time_usec_to_wait / 1000.0L) + 0.5); /* don't send, wait */
-    }
     aeCreateFileEvent(c->thread->loop, c->fd, AE_WRITABLE, socket_writeable, c);
     return AE_NOMORE;
 }
@@ -825,6 +783,21 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     thread *thread = c->thread;
 
+    uint64_t index = (time_us()-start_time)/1000000;
+    if (index >= cfg.duration) {
+        aeStop(thread->loop);
+        return;
+    }
+    // delay that connection if enough requests have already been sent this second
+    if (!c->written && thread->sent >= (total_requests_sent_target[index] / cfg.threads)) {
+        // Not yet time to send. Delay:
+        aeDeleteFileEvent(loop, fd, AE_WRITABLE);
+        aeCreateTimeEvent(
+                thread->loop, 1000, delay_request_direct, c, NULL);
+        // printf("delayed, sent: %ld, target: %ld\n", thread->sent, (total_requests_sent_target[index] / cfg.threads));
+        return;
+    }
+
     if (!c->written && cfg.dynamic) {
         script_request(thread->L, &c->request, &c->length);
     }
@@ -846,7 +819,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     c->written += n;
     if (c->written == c->length) {
         c->written = 0;
-        c->thread->sent ++;
+        thread->sent++;
 
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
 
@@ -858,7 +831,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
             // Not yet time to send. Delay:
             aeDeleteFileEvent(loop, fd, AE_WRITABLE);
             aeCreateTimeEvent(
-                    thread->loop, msec_to_wait, delay_request, c, NULL);
+                    thread->loop, msec_to_wait, delay_request_direct, c, NULL);
             return;
         }
         
