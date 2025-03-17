@@ -163,8 +163,6 @@ static void usage() {
            "                           (as opposed to each op)               \n"
            "    -r, --requests         Show the number of sent requests      \n"
            "    -v, --version          Print version details                 \n"
-           "                           in requests/sec (total)               \n"
-           "                           [Required Parameter]                  \n"
            "    -f, --file        <S>  Load rate file                  \n"           
            "                                                                 \n"
            "                                                                 \n"
@@ -574,7 +572,7 @@ static int reconnect_socket(thread *thread, connection *c) {
     aeDeleteFileEvent(thread->loop, c->fd, AE_WRITABLE | AE_READABLE);
     sock.close(c);
     close(c->fd);
-    printf("reconnect_socket\n");
+    // printf("reconnect_socket\n");
     return connect_socket(thread, c);
 }
 
@@ -620,8 +618,9 @@ static int check_timeouts(aeEventLoop *loop, long long id, void *data) {
     uint64_t maxAge = now - (cfg.timeout * 1000); // us
     // printf("check_timeouts maxAge %ld, c->start %ld\n", maxAge, c->start);
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
-        if (maxAge > c->start) {
+        if (c->sent > c->complete && maxAge > c->start) {
             thread->errors.timeout++;
+			reconnect_socket(thread, c);
         }
     }
 
@@ -744,7 +743,7 @@ static int response_complete(http_parser *parser) {
 
     // Count all responses (including pipelined ones:)
     c->complete++;
-    if (!http_should_keep_alive(parser)) {
+    if (!http_should_keep_alive(parser) || c->complete % 10 == 0) {
         reconnect_socket(thread, c);
         goto done;
     }
@@ -792,8 +791,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     if (!c->written && thread->sent >= (total_requests_sent_target[index] / cfg.threads)) {
         // Not yet time to send. Delay:
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-        aeCreateTimeEvent(
-                thread->loop, 1000, delay_request_direct, c, NULL);
+        aeCreateTimeEvent(thread->loop, 1000, delay_request_direct, c, NULL);
         // printf("delayed, sent: %ld, target: %ld\n", thread->sent, (total_requests_sent_target[index] / cfg.threads));
         return;
     }
@@ -830,8 +828,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 
             // Not yet time to send. Delay:
             aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-            aeCreateTimeEvent(
-                    thread->loop, msec_to_wait, delay_request_direct, c, NULL);
+            aeCreateTimeEvent(thread->loop, msec_to_wait, delay_request_direct, c, NULL);
             return;
         }
         
