@@ -158,9 +158,13 @@ void script_request(lua_State *L, char **buf, size_t *len) {
     lua_pop(L, pop);
 }
 
-void script_response(lua_State *L, int status, buffer *headers, buffer *body) {
+void script_response(lua_State *L, int status, char **request, buffer *headers, buffer *body) {
     lua_getglobal(L, "response");
     lua_pushinteger(L, status);
+
+	// request
+	lua_pushlstring(L, *request, strlen(*request));
+
     /* START - Modified by Rémi Segretain : add support for multiple cookies in the response */
     lua_newtable(L); // parent headers table
 
@@ -200,7 +204,7 @@ void script_response(lua_State *L, int status, buffer *headers, buffer *body) {
     /* END - Modified by Rémi Segretain */
 
     lua_pushlstring(L, body->buffer, body->cursor - body->buffer);
-    lua_call(L, 3, 0);
+    lua_call(L, 4, 0);
 
     buffer_reset(headers);
     buffer_reset(body);

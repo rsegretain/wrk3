@@ -708,7 +708,7 @@ static int response_complete(http_parser *parser) {
 
     if (c->headers.buffer) {
         *c->headers.cursor++ = '\0';
-        script_response(thread->L, status, &c->headers, &c->body);
+        script_response(thread->L, status, &c->request, &c->headers, &c->body);
         c->state = FIELD;
     }
 
