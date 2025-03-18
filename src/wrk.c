@@ -712,12 +712,6 @@ static int response_complete(http_parser *parser) {
         c->state = FIELD;
     }
 
-    if (now >= thread->stop_at) {
-        aeStop(thread->loop);
-        goto done;
-    }
-
-
     // Record if needed, either last in batch or all, depending in cfg:
     if (cfg.record_all_responses) {
         assert(now > c->actual_latency_start[c->complete & MAXO] );
@@ -743,6 +737,12 @@ static int response_complete(http_parser *parser) {
 
     // Count all responses (including pipelined ones:)
     c->complete++;
+
+    if (now >= thread->stop_at) {
+        aeStop(thread->loop);
+        goto done;
+    }
+
     if (!http_should_keep_alive(parser) || c->complete % 10 == 0) {
         reconnect_socket(thread, c);
         goto done;
