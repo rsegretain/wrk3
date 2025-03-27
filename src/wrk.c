@@ -14,7 +14,8 @@ uint64_t raw_latency[MAXTHREADS][MAXL];
 
 static struct config {
     uint64_t num_urls;
-    uint64_t threads;
+    uint64_t threads_count;
+	thread *threads;
     uint64_t connections;
     int dist; //0: fixed; 1: exp; 2: normal; 3: zipf
     uint64_t duration;
@@ -40,6 +41,13 @@ static struct {
     pthread_mutex_t mutex;
 } statistics;
 
+static struct {
+	uint64_t stats[5];
+	uint64_t responses;
+	pthread_mutex_t mutex;
+	FILE * file;
+	char *file_path;
+} requests_stats;
 
 static struct sock sock = {
     .connect  = sock_connect,
@@ -163,8 +171,8 @@ static void usage() {
            "                           (as opposed to each op)               \n"
            "    -r, --requests         Show the number of sent requests      \n"
            "    -v, --version          Print version details                 \n"
-           "    -f, --file        <S>  Load rate file                  \n"           
-           "                                                                 \n"
+           "    -f, --file        <S>  Load rate file                        \n"
+           "    -o, --stats-file       Requests stats output file            \n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)            \n");
@@ -182,14 +190,24 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
-    thread *threads = zcalloc(cfg.num_urls * cfg.threads * sizeof(thread));
-    uint64_t connections = cfg.connections / cfg.threads;
+    cfg.threads = zcalloc(cfg.num_urls * cfg.threads_count * sizeof(thread));
+    uint64_t connections = cfg.connections / cfg.threads_count;
     
     char *time = format_time_s(cfg.duration);
 
     lua_State **L = zmalloc(cfg.num_urls * sizeof(lua_State *));
     pthread_mutex_init(&statistics.mutex, NULL);
     statistics.requests = zmalloc(cfg.num_urls * sizeof(stats *));
+	
+	// RS : requests_stats init
+    pthread_mutex_init(&requests_stats.mutex, NULL);
+
+	if(requests_stats.file_path != NULL){
+		if ((requests_stats.file = fopen(requests_stats.file_path, "w")) == NULL){
+			perror("ERROR opening requests_stats file");
+			exit(-1);
+		}
+	}
 
     /*statitical variables*/
     struct hdr_histogram* total_latency_histogram;
@@ -215,7 +233,7 @@ int main(int argc, char **argv) {
     parse_rate(target_rate);
 
 
-    double throughput = cfg.rate / cfg.threads;
+    double throughput = cfg.rate / cfg.threads_count;
     
     char **purls = urls;
 
@@ -258,13 +276,17 @@ int main(int argc, char **argv) {
             exit(1);
         }
 
+		printf("Running %s test @ %s\n", time, url);
+        printf("  %"PRIu64" threads and %"PRIu64" connections\n\n",
+                cfg.threads_count, cfg.connections);
+
         uint64_t stop_at = time_us() + (cfg.duration * 1000000); // check timeout
         /* added by TR */
         start_time = time_us();
 
-        for (uint64_t id_thread = 0; id_thread < cfg.threads; id_thread++) {
-            uint64_t i = id_url * cfg.threads + id_thread;
-            thread *t = &threads[i];
+        for (uint64_t id_thread = 0; id_thread < cfg.threads_count; id_thread++) {
+            uint64_t i = id_url * cfg.threads_count + id_thread;
+            thread *t = &cfg.threads[i];
             t->tid           =  i;
             t->loop          = aeCreateEventLoop(10 + cfg.connections * cfg.num_urls * 3);
             t->connections   = connections;
@@ -295,12 +317,7 @@ int main(int argc, char **argv) {
                 exit(2);
             }
         }
-        printf("Running %s test @ %s\n", time, url);
-        printf("  %"PRIu64" threads and %"PRIu64" connections\n\n",
-                cfg.threads, cfg.connections);
-
         start_urls[id_url] = time_us();
-
     }
     
     struct sigaction sa = {
@@ -316,8 +333,8 @@ int main(int argc, char **argv) {
         url = *purls;
         purls++;
 
-        for (uint64_t id_thread = 0; id_thread < cfg.threads; id_thread++) {
-            thread *t = &threads[id_url*cfg.threads+id_thread];
+        for (uint64_t id_thread = 0; id_thread < cfg.threads_count; id_thread++) {
+            thread *t = &cfg.threads[id_url*cfg.threads_count+id_thread];
             pthread_join(t->thread, NULL); 
         }
         // timer
@@ -326,6 +343,12 @@ int main(int argc, char **argv) {
     
     uint64_t end = time_us();
     uint64_t total_runtime_us = end - start_urls[0];
+
+	
+	if(requests_stats.file_path != NULL && (fflush(requests_stats.file) !=0 || fclose(requests_stats.file) != 0)) {
+		perror("ERROR closing requests_stats file");
+		exit(-1);
+	}
 
     purls = urls;
 
@@ -343,9 +366,9 @@ int main(int argc, char **argv) {
         struct hdr_histogram* real_latency_histogram;
         hdr_init(1, MAX_LATENCY, 3, &latency_histogram);
         hdr_init(1, MAX_LATENCY, 3, &real_latency_histogram);
-        for (uint64_t id_thread = 0; id_thread < cfg.threads; id_thread++) {
-            uint64_t i = id_url*cfg.threads+id_thread;
-            thread *t = &threads[i];
+        for (uint64_t id_thread = 0; id_thread < cfg.threads_count; id_thread++) {
+            uint64_t i = id_url*cfg.threads_count+id_thread;
+            thread *t = &cfg.threads[i];
             complete += t->complete;
             bytes    += t->bytes;
 
@@ -490,9 +513,9 @@ void *thread_main(void *arg) {
     }
     thread->ff = NULL;
 
-    if ((cfg.print_realtime_latency) && ((thread->tid%cfg.threads) == 0)) {
+    if ((cfg.print_realtime_latency) && ((thread->tid%cfg.threads_count) == 0)) {
         char filename[50];
-        snprintf(filename, 50, "%s/url%" PRIu64 "thread%" PRIu64 ".txt", getcwd(NULL,0), (thread->tid/cfg.threads), (thread->tid%cfg.threads));
+        snprintf(filename, 50, "%s/url%" PRIu64 "thread%" PRIu64 ".txt", getcwd(NULL,0), (thread->tid/cfg.threads_count), (thread->tid%cfg.threads_count));
         printf("filename %s\n",filename);
         thread->ff = fopen(filename, "w");
     }
@@ -523,6 +546,11 @@ void *thread_main(void *arg) {
 
     aeCreateTimeEvent(loop, calibrate_delay, calibrate, thread, NULL);
     aeCreateTimeEvent(loop, timeout_delay, check_timeouts, thread, NULL);
+    
+	if (thread->tid == 0 && requests_stats.file_path != NULL) {
+		fprintf(requests_stats.file, "timestamp,requests_sent,responses,1xx,2xx,3xx,4xx,5xx\n");
+		aeCreateTimeEvent(loop, 1, requestsStats, thread, NULL);
+	}
 
     thread->start = time_us();
     /*aeMain does the job of processing the event loop that is initialized in the previous phase.*/
@@ -532,9 +560,31 @@ void *thread_main(void *arg) {
  
     zfree(thread->cs);
 
-    if (cfg.print_realtime_latency && (thread->tid % cfg.threads) == 0) fclose(thread->ff);
+    if (cfg.print_realtime_latency && (thread->tid % cfg.threads_count) == 0) fclose(thread->ff);
 
     return NULL;
+}
+
+static int requestsStats(aeEventLoop *loop, long long id, void *data) {
+	
+	uint64_t rqsts_sent = 0;
+	uint64_t responses_count = 0;
+	for (uint64_t i = 0; i < cfg.threads_count; i++) {
+		thread *t = &cfg.threads[i];
+		rqsts_sent += t->sent;
+		responses_count += t->complete;
+	}
+	fprintf(requests_stats.file, "%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
+		time_us() / 1000000,
+		rqsts_sent,
+		responses_count,
+		requests_stats.stats[0],
+		requests_stats.stats[1],
+		requests_stats.stats[2],
+		requests_stats.stats[3],
+		requests_stats.stats[4]
+	);
+	return 1000;
 }
 
 static int connect_socket(thread *thread, connection *c) {
@@ -638,7 +688,7 @@ static int sample_rate(aeEventLoop *loop, long long id, void *data) {
     // requests here indicates: real-time throughput of thread. (req/sec/thread)
     uint64_t requests = (thread->requests / (double) elapsed_ms) * 1000;
 
-    uint64_t id_url = thread->tid / cfg.threads; 
+    uint64_t id_url = thread->tid / cfg.threads_count; 
     pthread_mutex_lock(&statistics.mutex);
     stats_record(statistics.requests[id_url], requests);
     pthread_mutex_unlock(&statistics.mutex);
@@ -706,6 +756,10 @@ static int response_complete(http_parser *parser) {
         thread->errors.status++;
     }
 
+	pthread_mutex_lock(&requests_stats.mutex);
+    requests_stats.stats[(status / 100) - 1]++;
+    pthread_mutex_unlock(&requests_stats.mutex);
+
     if (c->headers.buffer) {
         *c->headers.cursor++ = '\0';
         script_response(thread->L, status, &c->request, &c->headers, &c->body);
@@ -723,7 +777,7 @@ static int response_complete(http_parser *parser) {
         thread->accum_latency += actual_latency_timing;
         // thread->target  = throughput/10; response side twice the interval.
         if (thread->monitored == thread->target) {
-            if (cfg.print_realtime_latency && (thread->tid%cfg.threads) == 0) {
+            if (cfg.print_realtime_latency && (thread->tid%cfg.threads_count) == 0) {
                 fprintf(thread->ff, "%" PRId64 "\n", hdr_value_at_percentile(thread->real_latency_histogram, 99));
                 fflush(thread->ff);
             }
@@ -788,11 +842,11 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         return;
     }
     // delay that connection if enough requests have already been sent this second
-    if (!c->written && thread->sent >= (total_requests_sent_target[index] / cfg.threads)) {
+    if (!c->written && thread->sent >= (total_requests_sent_target[index] / cfg.threads_count)) {
         // Not yet time to send. Delay:
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
         aeCreateTimeEvent(thread->loop, 1000, delay_request_direct, c, NULL);
-        // printf("delayed, sent: %ld, target: %ld\n", thread->sent, (total_requests_sent_target[index] / cfg.threads));
+        // printf("delayed, sent: %ld, target: %ld\n", thread->sent, (total_requests_sent_target[index] / cfg.threads_count));
         return;
     }
 
@@ -897,6 +951,7 @@ static struct option longopts[] = {
     { "help",           no_argument,       NULL, 'h' },
     { "version",        no_argument,       NULL, 'v' },
     { "dist",           required_argument, NULL, 'D' },
+    { "stats-file",     required_argument, NULL, 'o' },
     { NULL,             0,                 NULL,  0  }
 };
 
@@ -910,7 +965,7 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
 
     memset(cfg, 0, sizeof(struct config));
     cfg->num_urls = 0;
-    cfg->threads     = 2;
+    cfg->threads_count     = 2;
     cfg->connections = 10;
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
@@ -922,10 +977,10 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_sent_requests = false;
     cfg->dist = 0;
 
-    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:LPrSpBv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:LPrSpBv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
-                if (scan_metric(optarg, &cfg->threads)) return -1;
+                if (scan_metric(optarg, &cfg->threads_count)) return -1;
                 break;
             case 'c':
                 if (scan_metric(optarg, &cfg->connections)) return -1;
@@ -979,6 +1034,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
                 /* added by TR */
                 cfg->rate_file = optarg;
                 break;
+			case 'o':
+				requests_stats.file_path = optarg;
+				break;
             case 'h': 
             case '?': 
             case ':': 
@@ -987,9 +1045,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
         }
     }
 
-    if (optind == argc || !cfg->threads || !cfg->duration) return -1;
+    if (optind == argc || !cfg->threads_count || !cfg->duration) return -1;
 
-    if (!cfg->connections || cfg->connections < cfg->threads) {
+    if (!cfg->connections || cfg->connections < cfg->threads_count) {
         fprintf(stderr, "number of connections must be >= threads\n");
         return -1;
     }
