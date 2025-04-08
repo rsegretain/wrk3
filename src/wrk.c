@@ -670,6 +670,7 @@ static int check_timeouts(aeEventLoop *loop, long long id, void *data) {
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         if (c->sent > c->complete && maxAge > c->start) {
             thread->errors.timeout++;
+			c->sent--;
 			reconnect_socket(thread, c);
         }
     }
@@ -842,7 +843,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         return;
     }
     // delay that connection if enough requests have already been sent this second
-    if (!c->written && thread->sent >= (total_requests_sent_target[index] / cfg.threads_count)) {
+    if (!c->written && (c->sent != c->complete || thread->sent >= (total_requests_sent_target[index] / cfg.threads_count))) {
         // Not yet time to send. Delay:
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
         aeCreateTimeEvent(thread->loop, 1000, delay_request_direct, c, NULL);
@@ -866,7 +867,8 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     if (!c->written) {
         c->start = time_us();
         c->actual_latency_start[c->sent & MAXO] = c->start;
-        c->sent ++;
+        c->sent++;
+		// printf("%d : %ld / %ld\n", c->fd, c->sent, c->complete);
     }
     c->written += n;
     if (c->written == c->length) {
