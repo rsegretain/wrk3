@@ -34,6 +34,7 @@ static struct config {
     SSL_CTX *ctx; //https://www.openssl.org/docs/man3.0/man3/SSL_CTX_new.html
     /* added by TR */
     char    *rate_file;
+	bool blocking;
 } cfg;
 
 static struct {
@@ -172,7 +173,8 @@ static void usage() {
            "    -r, --requests         Show the number of sent requests      \n"
            "    -v, --version          Print version details                 \n"
            "    -f, --file        <S>  Load rate file                        \n"
-           "    -o, --stats-file       Requests stats output file            \n"
+           "    -o, --stats-file <file> Requests stats output file           \n"
+           "    -b, --blocking         Enable blocking mode, connexions wait for response\n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)            \n");
@@ -842,8 +844,14 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         aeStop(thread->loop);
         return;
     }
-    // delay that connection if enough requests have already been sent this second
-    if (!c->written && (c->sent != c->complete || thread->sent >= (total_requests_sent_target[index] / cfg.threads_count))) {
+    // delay that connection if enough requests have already been sent this second or if it is blocked
+    if (
+		!c->written // no request is currently being sent through the connexion
+		&& (
+			(cfg.blocking && c->sent != c->complete) // if blocking mode is enable and no response have yet been received for the last request sent
+			|| thread->sent >= (total_requests_sent_target[index] / cfg.threads_count) // enough request have been send for the time
+		)
+	) {
         // Not yet time to send. Delay:
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
         aeCreateTimeEvent(thread->loop, 1000, delay_request_direct, c, NULL);
@@ -868,7 +876,6 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         c->start = time_us();
         c->actual_latency_start[c->sent & MAXO] = c->start;
         c->sent++;
-		// printf("%d : %ld / %ld\n", c->fd, c->sent, c->complete);
     }
     c->written += n;
     if (c->written == c->length) {
@@ -954,6 +961,7 @@ static struct option longopts[] = {
     { "version",        no_argument,       NULL, 'v' },
     { "dist",           required_argument, NULL, 'D' },
     { "stats-file",     required_argument, NULL, 'o' },
+    { "blocking",       no_argument,       NULL, 'b' },
     { NULL,             0,                 NULL,  0  }
 };
 
@@ -978,8 +986,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_separate_histograms = false;
     cfg->print_sent_requests = false;
     cfg->dist = 0;
+	cfg->blocking = false;
 
-    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:LPrSpBv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:LPrSpbBv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads_count)) return -1;
@@ -1038,6 +1047,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
                 break;
 			case 'o':
 				requests_stats.file_path = optarg;
+				break;
+			case 'b':
+				cfg->blocking = true;
 				break;
             case 'h': 
             case '?': 
