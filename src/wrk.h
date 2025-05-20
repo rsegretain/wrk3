@@ -75,9 +75,11 @@ typedef struct connection {
     uint64_t sent;
     uint64_t estimate;
     uint64_t complete;
+    uint64_t done;
     uint64_t thread_start;
     uint64_t thread_next;
     uint64_t start;
+	uint64_t last_response_timestamp;
     char *request;
     size_t length;
     size_t written;

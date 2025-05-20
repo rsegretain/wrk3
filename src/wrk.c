@@ -538,8 +538,10 @@ void *thread_main(void *arg) {
         c->interval   = 1000000*thread->connections/thread->throughput;
         c->throughput = throughput;
         c->complete   = 0;
+        c->done   = 0;
         c->estimate   = 0;
         c->sent       = 0;
+		c->last_response_timestamp = time_us() + (i * step * 1000);
         aeCreateTimeEvent(loop, i*step, delayed_initial_connect, c, NULL);
     }
 
@@ -667,12 +669,14 @@ static int check_timeouts(aeEventLoop *loop, long long id, void *data) {
     connection *c  = thread->cs;
     uint64_t now   = time_us();
 
-    uint64_t maxAge = now - (cfg.timeout * 1000); // us
-    // printf("check_timeouts maxAge %ld, c->start %ld\n", maxAge, c->start);
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
-        if (c->sent > c->complete && maxAge > c->start) {
-            thread->errors.timeout++;
-			c->sent--;
+        if (
+			c->sent > c->done // if there is request in the air
+			&& (now - c->last_response_timestamp) > (cfg.timeout * 1000) // if the last response was received more than timeout earlier
+		) {
+			// printf("timeout : sent: %ld, done: %ld, lastresp: %ld, now: %ld, diff: %ld, timeout: %ld\n", c->sent, c->done, c->last_response_timestamp, now, now - c->last_response_timestamp, cfg.timeout * 1000);
+            thread->errors.timeout += c->sent - c->done;
+			c->done = c->sent;
 			reconnect_socket(thread, c);
         }
     }
@@ -794,13 +798,15 @@ static int response_complete(http_parser *parser) {
 
     // Count all responses (including pipelined ones:)
     c->complete++;
+	c->done++;
+	c->last_response_timestamp = now;
 
     if (now >= thread->stop_at) {
         aeStop(thread->loop);
         goto done;
     }
 
-    if (!http_should_keep_alive(parser) || c->complete % 10 == 0) {
+    if (!http_should_keep_alive(parser) || c->done % 10 == 0) {
         reconnect_socket(thread, c);
         goto done;
     }
@@ -848,7 +854,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     if (
 		!c->written // no request is currently being sent through the connexion
 		&& (
-			(cfg.blocking && c->sent != c->complete) // if blocking mode is enable and no response have yet been received for the last request sent
+			(cfg.blocking && c->sent != c->done) // if blocking mode is enable and no response have yet been received for the last request sent
 			|| thread->sent >= (total_requests_sent_target[index] / cfg.threads_count) // enough request have been send for the time
 		)
 	) {
@@ -873,8 +879,14 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         case RETRY: return;
     }
     if (!c->written) {
-        c->start = time_us();
+		uint64_t now = time_us();
+        c->start = now;
         c->actual_latency_start[c->sent & MAXO] = c->start;
+
+		if (c->sent == c->done) {
+			c->last_response_timestamp = now;
+		}
+
         c->sent++;
     }
     c->written += n;
@@ -916,7 +928,10 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
             case ERROR: goto error;
             case RETRY: return;
         }
-        if (http_parser_execute(&c->parser, &parser_settings, c->buf, n) != n) goto error;
+		size_t ret = http_parser_execute(&c->parser, &parser_settings, c->buf, n);
+        if (ret != n) {
+			goto error;
+		}
         c->thread->bytes += n;
     } while (n == RECVBUF && sock.readable(c) > 0);
 
