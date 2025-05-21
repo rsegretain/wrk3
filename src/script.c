@@ -529,7 +529,6 @@ void script_copy_value(lua_State *src, lua_State *dst, int index) {
                 lua_settable(dst, -3);
                 lua_pop(src, 1);
             }
-            lua_pop(src, 1);
             break;
         default:
             luaL_error(src, "cannot transfer '%s' to thread", luaL_typename(src, index));
