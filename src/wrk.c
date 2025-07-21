@@ -12,6 +12,8 @@
 #define MAX_LATENCY 24L * 60 * 60 * 1000000
 uint64_t raw_latency[MAXTHREADS][MAXL];
 
+#define DEFAULT_RQ_SENT_BEFORE_CX_RESET 150
+
 static struct config {
     uint64_t num_urls;
     uint64_t threads_count;
@@ -35,6 +37,7 @@ static struct config {
     /* added by TR */
     char    *rate_file;
 	bool blocking;
+	uint64_t rq_sent_before_cx_reset;
 } cfg;
 
 static struct {
@@ -175,6 +178,7 @@ static void usage() {
            "    -f, --file        <S>  Load rate file                        \n"
            "    -o, --stats-file <file> Requests stats output file           \n"
            "    -b, --blocking         Enable blocking mode, connexions wait for response\n"
+           "    -R --rq_cx_reset <N>   Requests sent per connexion before it reset\n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)            \n");
@@ -552,7 +556,7 @@ void *thread_main(void *arg) {
     aeCreateTimeEvent(loop, timeout_delay, check_timeouts, thread, NULL);
     
 	if (thread->tid == 0 && requests_stats.file_path != NULL) {
-		fprintf(requests_stats.file, "timestamp,requests_sent,responses,1xx,2xx,3xx,4xx,5xx\n");
+		fprintf(requests_stats.file, "timestamp,requests_sent,responses,1xx,2xx,3xx,4xx,5xx,timeout\n");
 		aeCreateTimeEvent(loop, 1, requestsStats, thread, NULL);
 	}
 
@@ -573,12 +577,14 @@ static int requestsStats(aeEventLoop *loop, long long id, void *data) {
 	
 	uint64_t rqsts_sent = 0;
 	uint64_t responses_count = 0;
+	uint64_t timeout_count = 0;
 	for (uint64_t i = 0; i < cfg.threads_count; i++) {
 		thread *t = &cfg.threads[i];
 		rqsts_sent += t->sent;
 		responses_count += t->complete;
+		timeout_count += t->errors.timeout;
 	}
-	fprintf(requests_stats.file, "%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
+	fprintf(requests_stats.file, "%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
 		time_us() / 1000000,
 		rqsts_sent,
 		responses_count,
@@ -586,7 +592,8 @@ static int requestsStats(aeEventLoop *loop, long long id, void *data) {
 		requests_stats.stats[1],
 		requests_stats.stats[2],
 		requests_stats.stats[3],
-		requests_stats.stats[4]
+		requests_stats.stats[4],
+		timeout_count
 	);
 	return 1000;
 }
@@ -806,7 +813,7 @@ static int response_complete(http_parser *parser) {
         goto done;
     }
 
-    if (!http_should_keep_alive(parser) || c->done % 10 == 0) {
+    if (!http_should_keep_alive(parser) || c->done % cfg.rq_sent_before_cx_reset == 0) {
         reconnect_socket(thread, c);
         goto done;
     }
@@ -977,6 +984,7 @@ static struct option longopts[] = {
     { "dist",           required_argument, NULL, 'D' },
     { "stats-file",     required_argument, NULL, 'o' },
     { "blocking",       no_argument,       NULL, 'b' },
+    { "rq_cx_reset",    required_argument, NULL, 'R' },
     { NULL,             0,                 NULL,  0  }
 };
 
@@ -1002,8 +1010,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_sent_requests = false;
     cfg->dist = 0;
 	cfg->blocking = false;
+	cfg->rq_sent_before_cx_reset = DEFAULT_RQ_SENT_BEFORE_CX_RESET;
 
-    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:LPrSpbBv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:R:LPrSpbBv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads_count)) return -1;
@@ -1065,6 +1074,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
 				break;
 			case 'b':
 				cfg->blocking = true;
+				break;
+			case 'R':
+				if (scan_metric(optarg, &cfg->rq_sent_before_cx_reset)) return -1;
 				break;
             case 'h': 
             case '?': 
