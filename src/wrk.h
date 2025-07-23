@@ -46,6 +46,7 @@ typedef struct {
     uint64_t bytes;
     uint64_t start;
     uint64_t mean;
+    uint64_t cx_reset;
     struct hdr_histogram *latency_histogram;
     struct hdr_histogram *real_latency_histogram;
     tinymt64_t rand;
@@ -74,6 +75,7 @@ typedef struct connection {
     uint64_t done;
     uint64_t start;
 	uint64_t last_response_timestamp;
+	uint64_t last_reset_timestamp;
     char *request;
     size_t length;
     size_t written;

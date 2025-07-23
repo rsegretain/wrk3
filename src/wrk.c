@@ -12,8 +12,6 @@
 #define MAX_LATENCY 24L * 60 * 60 * 1000000
 uint64_t raw_latency[MAXTHREADS][MAXL];
 
-#define DEFAULT_RQ_SENT_BEFORE_CX_RESET 150
-
 static struct config {
     uint64_t num_urls;
     uint64_t threads_count;
@@ -37,7 +35,8 @@ static struct config {
     /* added by TR */
     char    *rate_file;
 	bool blocking;
-	uint64_t rq_sent_before_cx_reset;
+	uint64_t window_cx_reset;
+	double thread_cx_reset_rate;
 } cfg;
 
 static struct {
@@ -177,8 +176,8 @@ static void usage() {
            "    -v, --version          Print version details                 \n"
            "    -f, --file        <S>  Load rate file                        \n"
            "    -o, --stats-file <file> Requests stats output file           \n"
-           "    -b, --blocking         Enable blocking mode, connexions wait for response\n"
-           "    -R --rq_cx_reset <N>   Requests sent per connexion before it reset\n"
+           "    -b, --blocking         Enable blocking mode, connections wait for response\n"
+           "    -w, --window-cx-reset <T>  Duration over whitch all connections are progressively reset [unit:s]\n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)            \n");
@@ -300,6 +299,7 @@ int main(int argc, char **argv) {
             t->complete      = 0;
             t->sent          = 0;
             t->monitored     = 0;
+			t->cx_reset      = 0;
             t->target        = throughput/10; //Shuang
             t->accum_latency = 0;
             t->L = script_create(cfg.script, url, headers);
@@ -531,7 +531,8 @@ void *thread_main(void *arg) {
 
     
     /* RS : spread the connections start over the first second */
-    uint64_t step = 1000 / thread->connections;
+    uint64_t step = (cfg.window_cx_reset * 1000) / cfg.connections;
+	uint64_t thread_step = (cfg.window_cx_reset * 1000) / cfg.threads_count;
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
@@ -542,11 +543,12 @@ void *thread_main(void *arg) {
         c->done   = 0;
         c->sent       = 0;
 		c->last_response_timestamp = time_us() + (i * step * 1000);
-		aeCreateTimeEvent(loop, i*step, delayed_initial_connect, c, NULL); // delay initial connection
+		aeCreateTimeEvent(loop, (i*step) + (thread->tid * thread_step), delayed_initial_connect, c, NULL); // delay initial connection
+		// printf("initial delay: %ld, tid : %ld, cid : %ld\n", (i*step) + (thread->tid * thread_step), thread->tid, i);
     }
 
-    uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
-    uint64_t timeout_delay = TIMEOUT_INTERVAL_MS + (thread->connections * step);
+    uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (cfg.window_cx_reset * 1000);
+    uint64_t timeout_delay = TIMEOUT_INTERVAL_MS + (cfg.window_cx_reset * 1000);
 
     aeCreateTimeEvent(loop, calibrate_delay, calibrate, thread, NULL);
     aeCreateTimeEvent(loop, timeout_delay, check_timeouts, thread, NULL);
@@ -829,6 +831,7 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
 
     http_parser_init(&c->parser, HTTP_RESPONSE);
     c->written = 0;
+	c->last_reset_timestamp = time_us();
 
     aeCreateFileEvent(c->thread->loop, fd, AE_READABLE, socket_readable, c);
 
@@ -845,12 +848,24 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
 static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     thread *thread = c->thread;
+	uint64_t now = time_us();
 
-    uint64_t index = (time_us()-start_time)/1000000;
+    uint64_t index = (now-start_time)/1000000; // index == seconds since start
     if (index >= cfg.duration) {
         aeStop(thread->loop);
         return;
     }
+
+	// connection reset
+	if (
+		thread->cx_reset < (cfg.thread_cx_reset_rate * index)
+		&&
+		(now - c->last_reset_timestamp) > (cfg.window_cx_reset * 1000000)
+	) {
+		reconnect_socket(thread, c);
+		return;
+	}
+
     // delay that connection if enough requests have already been sent this second or if it is blocked
     if (
 		!c->written // no request is currently being sent through the connexion
@@ -880,7 +895,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         case RETRY: return;
     }
     if (!c->written) {
-		uint64_t now = time_us();
+		now = time_us();
         c->start = now;
         c->actual_latency_start[c->sent & MAXO] = c->start;
 
@@ -896,12 +911,6 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         thread->sent++;
 
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-
-		if (c->sent % cfg.rq_sent_before_cx_reset == 0) {
-			reconnect_socket(thread, c);
-			return;
-		}
-
         
         uint64_t time_usec_to_wait = usec_to_next_send(c);
         if (time_usec_to_wait) {
@@ -983,7 +992,7 @@ static struct option longopts[] = {
     { "dist",           required_argument, NULL, 'D' },
     { "stats-file",     required_argument, NULL, 'o' },
     { "blocking",       no_argument,       NULL, 'b' },
-    { "rq_cx_reset",    required_argument, NULL, 'R' },
+    { "window-cx-reset", required_argument, NULL, 'w' },
     { NULL,             0,                 NULL,  0  }
 };
 
@@ -1009,9 +1018,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_sent_requests = false;
     cfg->dist = 0;
 	cfg->blocking = false;
-	cfg->rq_sent_before_cx_reset = DEFAULT_RQ_SENT_BEFORE_CX_RESET;
+	cfg->window_cx_reset = 0;
 
-    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:R:LPrSpbBv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:w:LPrSpbBv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads_count)) return -1;
@@ -1074,8 +1083,8 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
 			case 'b':
 				cfg->blocking = true;
 				break;
-			case 'R':
-				if (scan_metric(optarg, &cfg->rq_sent_before_cx_reset)) return -1;
+			case 'w':
+				if (scan_time(optarg, &cfg->window_cx_reset)) return -1;
 				break;
             case 'h': 
             case '?': 
@@ -1084,6 +1093,9 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
                 return -1;
         }
     }
+
+	cfg->thread_cx_reset_rate = (((double) cfg->connections) / cfg->window_cx_reset) / cfg->threads_count;
+	// printf("thread_cx_reset_rate : %f\n", cfg->thread_cx_reset_rate);
 
     if (optind == argc || !cfg->threads_count || !cfg->duration) return -1;
 
