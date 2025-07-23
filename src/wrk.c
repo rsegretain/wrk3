@@ -180,7 +180,7 @@ static void usage() {
            "    -f, --file        <S>  Load rate file                        \n"
            "    -o, --stats-file <file> Requests stats output file           \n"
            "    -b, --blocking         Enable blocking mode, connections wait for response\n"
-           "    -w, --window-cx-reset <T>  Duration over whitch all connections are progressively reset [unit:s], default to zero which disable this system\n"
+           "    -w, --window-cx-reset <T>  Duration over whitch all connections are progressively reset [unit:s], default to 20, 0 disable this system\n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)            \n");
@@ -1051,7 +1051,7 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
     cfg->print_sent_requests = false;
     cfg->dist = 0;
 	cfg->blocking = false;
-	cfg->window_cx_reset = 0;
+	cfg->window_cx_reset = 20;
 
     while ((c = getopt_long(argc, argv, "t:c:s:d:D:H:T:f:o:w:LPrSpbBv?", longopts, NULL)) != -1) {
         switch (c) {
