@@ -177,7 +177,7 @@ static void usage() {
            "    -f, --file        <S>  Load rate file                        \n"
            "    -o, --stats-file <file> Requests stats output file           \n"
            "    -b, --blocking         Enable blocking mode, connections wait for response\n"
-           "    -w, --window-cx-reset <T>  Duration over whitch all connections are progressively reset [unit:s]\n"
+           "    -w, --window-cx-reset <T>  Duration over whitch all connections are progressively reset [unit:s], default to zero which disable this system\n"
            "                                                                 \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)           \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)            \n");
