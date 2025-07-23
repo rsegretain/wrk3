@@ -813,7 +813,7 @@ static int response_complete(http_parser *parser) {
         goto done;
     }
 
-    if (!http_should_keep_alive(parser) || c->done % cfg.rq_sent_before_cx_reset == 0) {
+    if (!http_should_keep_alive(parser)) {
         reconnect_socket(thread, c);
         goto done;
     }
@@ -902,6 +902,11 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
         thread->sent++;
 
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
+
+		if (c->sent % cfg.rq_sent_before_cx_reset == 0) {
+			reconnect_socket(thread, c);
+			return;
+		}
 
         
         uint64_t time_usec_to_wait = usec_to_next_send(c);
