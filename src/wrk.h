@@ -76,6 +76,7 @@ typedef struct connection {
     uint64_t start;
 	uint64_t last_response_timestamp;
 	uint64_t last_reset_timestamp;
+	uint64_t reset_counter;
     char *request;
     size_t length;
     size_t written;

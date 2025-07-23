@@ -71,6 +71,9 @@ static uint64_t start_time;
 
 static uint64_t* total_requests_sent_target; /* added by RS */
 
+static bool all_connections_started = false;
+static uint64_t all_connections_started_second = 0;
+
 static volatile sig_atomic_t stop = 0;
 
 static void handler(int sig) {
@@ -531,13 +534,7 @@ void *thread_main(void *arg) {
 
     
     /* RS : spread the connections start over the first second */
-    uint64_t step = (cfg.window_cx_reset * 1000) / cfg.connections;
-	uint64_t thread_step = (cfg.window_cx_reset * 1000) / cfg.threads_count;
-
-	if (cfg.window_cx_reset == 0) {
-		step = 1000 / thread->connections;
-		thread_step = 0;
-	}
+    uint64_t step = 1000 / thread->connections;
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
@@ -548,18 +545,21 @@ void *thread_main(void *arg) {
         c->done       = 0;
         c->sent       = 0;
 		c->last_response_timestamp = time_us() + (i * step * 1000);
-		aeCreateTimeEvent(loop, (i*step) + (thread->tid * thread_step), delayed_initial_connect, c, NULL); // delay initial connection
+		c->last_reset_timestamp = 0;
+		c->reset_counter = 0;
+		aeCreateTimeEvent(loop, (i*step), delayed_initial_connect, c, NULL); // delay initial connection
 		// printf("initial delay: %ld, tid : %ld, cid : %ld\n", (i*step) + (thread->tid * thread_step), thread->tid, i);
     }
 
-    uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (cfg.window_cx_reset * 1000);
-    uint64_t timeout_delay = TIMEOUT_INTERVAL_MS + (cfg.window_cx_reset * 1000);
+    uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
+    uint64_t timeout_delay = TIMEOUT_INTERVAL_MS + (thread->connections * step);
 
     aeCreateTimeEvent(loop, calibrate_delay, calibrate, thread, NULL);
     aeCreateTimeEvent(loop, timeout_delay, check_timeouts, thread, NULL);
     
 	if (thread->tid == 0 && requests_stats.file_path != NULL) {
 		fprintf(requests_stats.file, "timestamp,requests_sent,responses,1xx,2xx,3xx,4xx,5xx,timeout\n");
+		aeCreateTimeEvent(loop, 1, checkAllConnectionsStarted, thread, NULL);
 		aeCreateTimeEvent(loop, 1, requestsStats, thread, NULL);
 	}
 
@@ -574,6 +574,24 @@ void *thread_main(void *arg) {
     if (cfg.print_realtime_latency && (thread->tid % cfg.threads_count) == 0) fclose(thread->ff);
 
     return NULL;
+}
+
+static int checkAllConnectionsStarted(aeEventLoop *loop, long long id, void *data) {
+	for (uint64_t i = 0; i < cfg.threads_count; i++) {
+		thread *thread = &cfg.threads[i];
+		connection *c = thread->cs;
+		for (uint64_t j = 0; j < thread->connections; j++, c++) {
+			if (c->reset_counter == 0) {
+				return 500;
+			}
+		}
+	}
+	all_connections_started = true;
+	all_connections_started_second = (time_us() - start_time) / 1000000;
+
+	// printf("all_connections_started_second : %ld\n", all_connections_started_second);
+
+	return AE_NOMORE;
 }
 
 static int requestsStats(aeEventLoop *loop, long long id, void *data) {
@@ -836,6 +854,7 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
 
     http_parser_init(&c->parser, HTTP_RESPONSE);
     c->written = 0;
+	c->reset_counter++;
 	c->last_reset_timestamp = time_us();
 
     aeCreateFileEvent(c->thread->loop, fd, AE_READABLE, socket_readable, c);
@@ -865,10 +884,17 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 	if (
 		cfg.window_cx_reset > 0
 		&&
-		thread->cx_reset < (cfg.thread_cx_reset_rate * index)
+		all_connections_started
 		&&
-		(now - c->last_reset_timestamp) > (cfg.window_cx_reset * 1000000)
+		thread->cx_reset < (cfg.thread_cx_reset_rate * (index - all_connections_started_second))
+		&&
+		(
+			c->reset_counter == 1
+			||
+			(now - c->last_reset_timestamp) > (cfg.window_cx_reset * 1000000)
+		)
 	) {
+		thread->cx_reset++;
 		reconnect_socket(thread, c);
 		return;
 	}
