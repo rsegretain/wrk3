@@ -45,7 +45,6 @@ typedef struct {
     uint64_t accum_latency;
     uint64_t bytes;
     uint64_t start;
-    double throughput;
     uint64_t mean;
     struct hdr_histogram *latency_histogram;
     struct hdr_histogram *real_latency_histogram;
@@ -70,20 +69,14 @@ typedef struct connection {
     } state;
     int fd;
     SSL *ssl;
-    double throughput;
-    uint64_t interval;
     uint64_t sent;
-    uint64_t estimate;
     uint64_t complete;
     uint64_t done;
-    uint64_t thread_start;
-    uint64_t thread_next;
     uint64_t start;
 	uint64_t last_response_timestamp;
     char *request;
     size_t length;
     size_t written;
-    uint64_t pending;
     buffer headers;
     buffer body;
     char buf[RECVBUF];

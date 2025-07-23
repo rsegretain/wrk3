@@ -296,7 +296,6 @@ int main(int argc, char **argv) {
             t->tid           =  i;
             t->loop          = aeCreateEventLoop(10 + cfg.connections * cfg.num_urls * 3);
             t->connections   = connections;
-            t->throughput    = throughput;
             t->stop_at       = stop_at;
             t->complete      = 0;
             t->sent          = 0;
@@ -526,7 +525,7 @@ void *thread_main(void *arg) {
         thread->ff = fopen(filename, "w");
     }
 
-    double throughput = (thread->throughput / 1000000.0) / thread->connections;
+    // double throughput = (thread->throughput / 1000000.0) / thread->connections;
 
     connection *c = thread->cs;
 
@@ -539,14 +538,11 @@ void *thread_main(void *arg) {
         c->ssl        = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
         c->request    = request;
         c->length     = length;
-        c->interval   = 1000000*thread->connections/thread->throughput;
-        c->throughput = throughput;
         c->complete   = 0;
         c->done   = 0;
-        c->estimate   = 0;
         c->sent       = 0;
 		c->last_response_timestamp = time_us() + (i * step * 1000);
-        aeCreateTimeEvent(loop, i*step, delayed_initial_connect, c, NULL);
+		aeCreateTimeEvent(loop, i*step, delayed_initial_connect, c, NULL); // delay initial connection
     }
 
     uint64_t calibrate_delay = CALIBRATE_DELAY_MS + (thread->connections * step);
@@ -639,8 +635,6 @@ static int reconnect_socket(thread *thread, connection *c) {
 
 static int delayed_initial_connect(aeEventLoop *loop, long long id, void *data) {
     connection* c = data;
-    c->thread_start = time_us();
-    c->thread_next  = c->thread_start;
     connect_socket(c->thread, c);
     return AE_NOMORE;
 }
