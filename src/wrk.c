@@ -534,13 +534,18 @@ void *thread_main(void *arg) {
     uint64_t step = (cfg.window_cx_reset * 1000) / cfg.connections;
 	uint64_t thread_step = (cfg.window_cx_reset * 1000) / cfg.threads_count;
 
+	if (cfg.window_cx_reset == 0) {
+		step = 1000 / thread->connections;
+		thread_step = 0;
+	}
+
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread     = thread;
         c->ssl        = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
         c->request    = request;
         c->length     = length;
         c->complete   = 0;
-        c->done   = 0;
+        c->done       = 0;
         c->sent       = 0;
 		c->last_response_timestamp = time_us() + (i * step * 1000);
 		aeCreateTimeEvent(loop, (i*step) + (thread->tid * thread_step), delayed_initial_connect, c, NULL); // delay initial connection
@@ -858,6 +863,8 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 
 	// connection reset
 	if (
+		cfg.window_cx_reset > 0
+		&&
 		thread->cx_reset < (cfg.thread_cx_reset_rate * index)
 		&&
 		(now - c->last_reset_timestamp) > (cfg.window_cx_reset * 1000000)
@@ -1094,8 +1101,10 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
         }
     }
 
-	cfg->thread_cx_reset_rate = (((double) cfg->connections) / cfg->window_cx_reset) / cfg->threads_count;
-	// printf("thread_cx_reset_rate : %f\n", cfg->thread_cx_reset_rate);
+	if (cfg->window_cx_reset > 0) {
+		cfg->thread_cx_reset_rate = (((double) cfg->connections) / cfg->window_cx_reset) / cfg->threads_count;
+		// printf("thread_cx_reset_rate : %f\n", cfg->thread_cx_reset_rate);
+	}
 
     if (optind == argc || !cfg->threads_count || !cfg->duration) return -1;
 
