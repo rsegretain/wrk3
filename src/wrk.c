@@ -557,10 +557,12 @@ void *thread_main(void *arg) {
     aeCreateTimeEvent(loop, calibrate_delay, calibrate, thread, NULL);
     aeCreateTimeEvent(loop, timeout_delay, check_timeouts, thread, NULL);
     
-	if (thread->tid == 0 && requests_stats.file_path != NULL) {
-		fprintf(requests_stats.file, "timestamp,requests_sent,responses,1xx,2xx,3xx,4xx,5xx,timeout\n");
+	if (thread->tid == 0) {
+		if ( requests_stats.file_path != NULL) {
+			fprintf(requests_stats.file, "timestamp,requests_sent,responses,1xx,2xx,3xx,4xx,5xx,timeout\n");
+			aeCreateTimeEvent(loop, 1, requestsStats, thread, NULL);
+		}
 		aeCreateTimeEvent(loop, 1, checkAllConnectionsStarted, thread, NULL);
-		aeCreateTimeEvent(loop, 1, requestsStats, thread, NULL);
 	}
 
     thread->start = time_us();
