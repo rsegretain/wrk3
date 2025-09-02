@@ -151,7 +151,7 @@ void parse_rate(uint64_t *rate)
 
     /* display for debugging */
     // for(i=0; i<cfg.duration; i++){
-    //     printf("timestamp: %d \t delay:%d\n", i, rate[i]);
+    //     printf("timestamp: %d \t delay:%ld\n", i, rate[i]);
     // }
     // for(i=0; i<cfg.duration; i++){
     //     printf("timestamp: %d \t total_requests_sent_target:%ld\n", i, total_requests_sent_target[i]);
@@ -770,8 +770,8 @@ static uint64_t usec_to_next_send(connection *c) {
     uint64_t delay = target_rate[index%cfg.duration];
     /* printf("index for next rate: %d\n", index); */
 
-    // max sleep duration of 2s
-    return min(delay, 2 * 1000000);
+    // max sleep duration of 1s
+    return min(delay, 1 * 1000000);
 }
 
 
@@ -915,7 +915,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 	) {
         // Not yet time to send. Delay:
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-        aeCreateTimeEvent(thread->loop, 1000, delay_request_direct, c, NULL);
+        aeCreateTimeEvent(thread->loop, round((usec_to_next_send(c) / 1000.0L) + 0.5), delay_request_direct, c, NULL);
         // printf("delayed, sent: %ld, target: %ld\n", thread->sent, (total_requests_sent_target[index] / cfg.threads_count));
         return;
     }
