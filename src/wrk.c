@@ -66,7 +66,7 @@ static struct http_parser_settings parser_settings = {
 
 
 /* added by TR */
-static int *target_rate;
+static uint64_t *target_rate;
 static uint64_t start_time;
 
 static uint64_t* total_requests_sent_target; /* added by RS */
@@ -84,8 +84,12 @@ int min(int a, int b){
     return (a<b) ? a : b;
 }
 
+float max(float a, float b){
+    return (a>b) ? a : b;
+}
+
 /* added by TR */
-void parse_rate(int *rate)
+void parse_rate(uint64_t *rate)
 {
     FILE * fp;
 
@@ -128,8 +132,8 @@ void parse_rate(int *rate)
         
         int j=i;
         for(; j<min(next_index, cfg.duration); j++){
-            float rate_per_connection= (float) current_rate / (float) cfg.connections;
-            rate[j]= (int) ((float) 1000000 / rate_per_connection);
+            float rate_per_connection= max((float) current_rate / (float) cfg.connections, 1);
+            rate[j]= (uint64_t) ((float) 1000000 / rate_per_connection);
             total_requests_sent_target[j+1] = total_requests_sent_target[j] + next_rate;
         }
 
@@ -137,7 +141,7 @@ void parse_rate(int *rate)
         current_rate=next_rate;
     }
 
-    rate[i++]=(int) ((float) 1000000 / ((float) current_rate / (float) cfg.connections));
+    rate[i++]=(uint64_t) ((float) 1000000 / max((float) current_rate / (float) cfg.connections, 1));
     
     int nb_filed_values=i;
     for(; i < cfg.duration; i++){
@@ -237,7 +241,7 @@ int main(int argc, char **argv) {
     /* added by RS */
     total_requests_sent_target = (uint64_t*) malloc(cfg.duration * sizeof(uint64_t));
     /* added by TR */
-    target_rate = (int*) malloc(cfg.duration * sizeof(int));
+    target_rate = (uint64_t*) malloc(cfg.duration * sizeof(uint64_t));
     parse_rate(target_rate);
 
 
