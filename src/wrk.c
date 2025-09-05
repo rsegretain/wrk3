@@ -132,7 +132,7 @@ void parse_rate(uint64_t *rate)
         
         int j=i;
         for(; j<min(next_index, cfg.duration); j++){
-            float rate_per_connection= max((float) current_rate / (float) cfg.connections, 1);
+            float rate_per_connection= (float) max(current_rate, 1) / (float) cfg.connections;
             rate[j]= (uint64_t) ((float) 1000000 / rate_per_connection);
             total_requests_sent_target[j+1] = total_requests_sent_target[j] + next_rate;
         }
@@ -141,7 +141,7 @@ void parse_rate(uint64_t *rate)
         current_rate=next_rate;
     }
 
-    rate[i++]=(uint64_t) ((float) 1000000 / max((float) current_rate / (float) cfg.connections, 1));
+    rate[i++]=(uint64_t) ((float) 1000000 / ((float) max(current_rate, 1) / (float) cfg.connections));
     
     int nb_filed_values=i;
     for(; i < cfg.duration; i++){
@@ -915,7 +915,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 	) {
         // Not yet time to send. Delay:
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-        aeCreateTimeEvent(thread->loop, round((usec_to_next_send(c) / 1000.0L) + 0.5), delay_request_direct, c, NULL);
+        aeCreateTimeEvent(thread->loop, round(((usec_to_next_send(c) / 1000.0L) * 0.1) + 0.5), delay_request_direct, c, NULL);
         // printf("delayed, sent: %ld, target: %ld\n", thread->sent, (total_requests_sent_target[index] / cfg.threads_count));
         return;
     }
