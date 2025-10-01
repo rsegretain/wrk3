@@ -114,7 +114,7 @@ void parse_rate(uint64_t *rate)
     float current_timestamp;
     fscanf(fp,"%f,%d\n",&current_timestamp, &current_rate);
     cfg.rate = current_rate;
-    total_requests_sent_target[0] = current_rate;
+    total_requests_sent_target[0] = 0;
     i = (int) current_timestamp; // should still be zero
 
     while( i < cfg.duration ){
@@ -146,7 +146,13 @@ void parse_rate(uint64_t *rate)
     int nb_filed_values=i;
     for(; i < cfg.duration; i++){
         rate[i] = rate[i % nb_filed_values];
-        total_requests_sent_target[i] = total_requests_sent_target[i-1] + (total_requests_sent_target[(i % nb_filed_values)+1] - total_requests_sent_target[(i % nb_filed_values)-0]);
+		if (i == 1) {
+			total_requests_sent_target[i] = total_requests_sent_target[i-1] * 2;
+
+		}
+		else {
+			total_requests_sent_target[i] = total_requests_sent_target[i-1] + (total_requests_sent_target[(i % nb_filed_values)+1] - total_requests_sent_target[(i % nb_filed_values)-0]);
+		}
     }
 
     /* display for debugging */
@@ -767,7 +773,7 @@ static int response_body(http_parser *parser, const char *at, size_t len) {
 static uint64_t usec_to_next_send(connection *c) {
     uint64_t now = time_us();
     int index = (now-start_time)/1000000;
-    uint64_t delay = target_rate[index%cfg.duration];
+    uint64_t delay = round(target_rate[index%cfg.duration] * 0.95);
     /* printf("index for next rate: %d\n", index); */
 
     // max sleep duration of 1s
