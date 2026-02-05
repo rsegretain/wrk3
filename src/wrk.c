@@ -1,4 +1,16 @@
-// Copyright (C) 2012 - Will Glozer.  All rights reserved.
+/**
+
+wrk3
+Copyright 2026 Rémi Segretain, Thomas Ropars, Gabriel Job Anthunes Grabner
+
+wrk2
+Copyright 2014 Gil Tene and Mike Barker
+
+wrk
+Copyright (C) 2012 - Will Glozer.  All rights reserved.
+
+ */
+
 
 #include "wrk.h"
 #include "unistd.h"
@@ -1115,8 +1127,8 @@ static int parse_args(struct config *cfg, char ***urls, struct http_parser_url *
                 cfg->timeout *= 1000;
                 break;
             case 'v':
-                printf("wrk %s [%s] ", VERSION, aeGetApiName());
-                printf("Copyright (C) 2012 Will Glozer\n");
+                printf("wrk3 [%s] ", aeGetApiName());
+                printf("wrk3 Copyright 2026 Rémi Segretain, Thomas Ropars, Gabriel Job Anthunes Grabner\nwrk2 Copyright 2014 Gil Tene and Mike Barker\nwrk Copyright (C) 2012 Will Glozer\n");
                 break;
             case 'f':
                 /* added by TR */
