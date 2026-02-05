@@ -1,24 +1,81 @@
 # wrk3
 
-TODO
+wrk3 is a open-loop HTTP load generator.
+TODO: what does thath mean (responses ignored)
+
+## Main configurations points
+
+### Load file
+
+It follow instruction from a csv load file that describe, up to each second, how many requests/seconds it should send.
+
+### Load Lua script
+
+See [SCRIPTING](./SCRIPTING) for more details.
+
+### Duration
+
+### Thread number
+
+### Connections number
+
+### Connections renewal window
+
+default to 20s
+
+## Usage details
+```
+Usage: wrk <options> <url>                                       
+  Options:                                                       
+    -c, --connections <N>  Connections to keep open              
+    -D, --dist        <S>  fixed, exp, norm, zipf                
+    -P                     Print each request's latency          
+    -p                     Print 99th latency every 0.2s to file 
+                           under the current working directory   
+    -d, --duration    <T>  Duration of test                      
+    -t, --threads     <N>  Number of threads to use              
+                                                                 
+    -s, --script      <S>  Load Lua script file                  
+    -H, --header      <H>  Add header to request                 
+    -L, --latency          Print latency statistics              
+    -S, --separate         Print statistics on different url     
+    -T, --timeout     <T>  Socket/request timeout [unit:s]       
+    -B, --batch_latency    Measure latency of whole              
+                           batches of pipelined ops              
+                           (as opposed to each op)               
+    -r, --requests         Show the number of sent requests      
+    -v, --version          Print version details                 
+    -f, --file        <S>  Load rate file                        
+    -o, --stats-file <file> Requests stats output file           
+    -b, --blocking         Enable blocking mode, connections wait for response
+    -w, --window-cx-reset <T>  Duration over whitch all connections are progressively reset [unit:s], default to 20, 0 disable this system
+                                                                 
+  Numeric arguments may include a SI unit (1k, 1M, 1G)           
+  Time arguments may include a time unit (2s, 2m, 2h)
+```
+
+## Timeout count limitations
+
+The request in timeout count is very approximative and shouldn't be relied on. Connections are simultaneously used by multiple requests, it's only when a connection doesn't receive a response for more than T seconds that all flying requests on that connection are declared on timeout.
+So if a connection receives at least one response often enough, it remains blind to the fact that the other requests can be in timeout.
+
+## Stats file
+
+Output a CSV file containing, for each second, the current count of requests sent, responses received, responses received per HTTP responses code.
+
+Warning : The count of responses can be slightly off, if some responses arrived after wrk3 end.
+
+## Blocking mode
+
+Sometimes it is needed to get access to the responses.
+When the blocking mode is enable, the connections wait for the response to be received before sending another requests.
+Then the response(...) lua function can correctly match request and response.
 
 
-Mes modifications ne bouleverse pas la manière d'utiliser wrk3.
-Ce qui change :
-- J'ai retiré de l'appel initial un argument obligatoire devenu obsolète : '-R', qui spécifiait le nb de requête par seconde.
-- J'ai ajouté un paramètre à la fonction LUA 'response' pour y ajouter la requête initial : 'function response(status, request, headers, body)', et comme je suis pas malin je n'ai pas mis le nouvel argument en dernier ce qui aurait permis une retro-compatibilité.
-- J'ai essayé de corriger le décompte des requêtes en timeout mais il semble toujours au fraise. Si vous utilisez ce nombre ça peut vous impacter.
-- Deux changements de comportement pour permettre une bonne répartition des requêtes quand des réplicas apparaissent ou disparaissent :
-    - Lorsqu'une requête timeout, la connexion est réinitialisée.
-    - Lorsque qu'une connexion a envoyée 10 requêtes elle est réinitialisée. Pour l'instant c'est une valeur en dure dans le code mais je compte mettre un argument pour la paramétrer.
+# History :
 
-Un ajout :
-- un nouvel argument '-o' ou '--stats-file' : le chemin vers un fichier csv où sera écrit des comptes par pas de temps sur le nombre de requêtes envoyées, de réponses reçues et de code de réponse http
+wrk3 isn't directly based on wrk2, it is based on a version of wrk2 customized by TODO cite le papier
 
-Donc je pense que les seules modifs à faire c'est de retirer le '-R' et d'ajouter l'argument 'request' dans la fonction LUA (si vos scripts l'utilise).
-Voilà. 
-
-Renouvellement des connexions auto, fenêtre
 
 # README from previous version :
 
