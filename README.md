@@ -1,13 +1,15 @@
 # wrk3
 
-wrk3 is a open-loop HTTP load generator.
-TODO: what does thath mean (responses ignored)
+wrk3 is an open-loop HTTP load generator.
+TODO: what does that mean (responses ignored)
+
+Compared to previous version, wrk3 try it's best to send request uniformly across time, not in burst : previous version could send all the required requests for a given second at the same millisecond, then nothing until the next second.
 
 ## Main configurations points
 
 ### Load file
 
-It follow instruction from a csv load file that describe, up to each second, how many requests/seconds it should send.
+It follows instruction from a CSV load file that describe, up to each second, how many requests/seconds it should send.
 
 ### Load Lua script
 
@@ -20,6 +22,12 @@ See [SCRIPTING](./SCRIPTING) for more details.
 ### Connections number
 
 ### Connections renewal window
+
+This feature exist to workaround the default load-balancing strategy of Kubernetes.
+By default, Kubernetes distribute the load across the various replicas of a service based on the connection.
+If the connection are never renewed, replicas created during the injection never receive their share of the load.
+
+EXPLAIN replicas load balancing k8s
 
 default to 20s
 
