@@ -23,7 +23,7 @@ function request()
    return wrk.request()
 end
 
-function response(status, headers, body)
+function response(status, request, headers, body)
    responses = responses + 1
 end
 

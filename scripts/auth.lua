@@ -9,7 +9,7 @@ request = function()
    return wrk.format("GET", path)
 end
 
-response = function(status, headers, body)
+response = function(status, request, headers, body)
    if not token and status == 200 then
       token = headers["X-Token"]
       path  = "/resource"
